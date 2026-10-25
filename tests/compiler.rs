@@ -84,10 +84,12 @@ fn a_bare_return_produces_a_successful_silent_executable() {
 #[test]
 fn verified_ir_contains_native_entry_point_and_print_call() {
     let ir = backend::emit_ir(&program("main() = print(\"Hello world!\")"), "hello").unwrap();
-    assert!(ir.contains("define i32 @main()"));
-    assert!(ir.contains("call i32 @puts"));
+    assert!(ir.contains("define i32 @pepper_main()"));
+    assert!(ir.contains("call i32 @pepper_runtime_print_v1"));
     assert!(ir.contains("Hello world!"));
     assert!(ir.contains("target triple ="));
+    assert!(!ir.contains("@puts"));
+    assert!(!ir.contains("define i32 @main()"));
 }
 
 #[test]
@@ -105,7 +107,6 @@ fn executable_subset_rejects_invalid_and_unimplemented_programs() {
         ("main() = print(\"a\", \"b\")", "exactly one"),
         ("main() = typo(\"hi\")", "unknown function"),
         ("main() = x.print(\"hi\")", "only calls"),
-        ("main() = print(\"a\0b\")", "NUL bytes"),
         ("main() = x = 1", "not supported"),
         ("main() = return 1", "not supported"),
         ("main() = 1 + 2", "expected print"),
@@ -128,30 +129,30 @@ fn semantic_failure_is_located_and_does_not_write_executable() {
 }
 
 #[test]
-fn missing_linker_leaves_existing_output_intact_and_cleans_up() {
+fn missing_rust_compiler_leaves_existing_output_intact_and_cleans_up() {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join("hello");
     fs::write(&output, b"existing output").unwrap();
-    let missing = directory.path().join("missing-linker");
-    let error = backend::build_with_linker(
+    let missing = directory.path().join("missing-rustc");
+    let error = backend::build_with_rustc(
         &program("main() = return"),
         "test",
         &output,
         missing.as_os_str(),
     )
     .unwrap_err();
-    assert!(error.contains("cannot run linker"));
+    assert!(error.contains("cannot run Rust compiler"));
     assert_eq!(fs::read(&output).unwrap(), b"existing output");
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
 #[cfg(unix)]
 #[test]
-fn failing_linker_leaves_existing_output_intact_and_cleans_up() {
+fn failing_rust_compiler_leaves_existing_output_intact_and_cleans_up() {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join("hello");
     fs::write(&output, b"existing output").unwrap();
-    let error = backend::build_with_linker(
+    let error = backend::build_with_rustc(
         &program("main() = return"),
         "test",
         &output,
@@ -191,4 +192,47 @@ fn cli_rejects_overwriting_source_and_malformed_build_options() {
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("Usage:"));
     }
+}
+
+#[test]
+fn rust_runtime_prints_embedded_nul_bytes_without_truncation() {
+    let directory = tempfile::tempdir().unwrap();
+    let build = build_source(directory.path(), "main() = print(\"a\0b\")");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let output = Command::new(directory.path().join("hello"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.stdout, b"a\0b\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn rust_io_failure_becomes_a_nonzero_pepper_exit_status() {
+    use std::{
+        os::{fd::OwnedFd, unix::net::UnixStream},
+        process::Stdio,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let build = build_source(directory.path(), "main() = print(\"closed output\")");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let (writer, reader) = UnixStream::pair().unwrap();
+    drop(reader);
+    let output = Command::new(directory.path().join("hello"))
+        .stdout(Stdio::from(OwnedFd::from(writer)))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        output.stderr.is_empty(),
+        "runtime should return errors without panicking"
+    );
 }

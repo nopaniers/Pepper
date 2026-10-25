@@ -94,13 +94,6 @@ pub fn analyze(module: &Module) -> Result<Program, Diagnostic> {
                         arguments[0].span,
                     ));
                 };
-                // The initial runtime uses libc puts, whose string representation is NUL terminated.
-                if value.contains('\0') {
-                    return Err(Diagnostic::new(
-                        "NUL bytes in printed strings are not supported yet",
-                        arguments[0].span,
-                    ));
-                }
                 instructions.push(Instruction::Print(value.clone()));
             }
             _ => {

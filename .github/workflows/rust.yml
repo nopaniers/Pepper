@@ -15,8 +15,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --all-targets
+      - run: rustfmt --edition 2024 --check runtime/host.rs
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace --all-targets
       - run: cargo run --locked -- check examples/hello.pepper
       - run: cargo run --locked -- check examples/functions.pepper
       - name: Compile and run Hello World

@@ -17,3 +17,8 @@ path = "src/main.rs"
 [dependencies]
 inkwell = { version = "=0.11.0", default-features = false, features = ["llvm19-1-force-dynamic", "target-x86", "target-aarch64"] }
 tempfile = "3.23"
+
+[workspace]
+members = ["runtime"]
+default-members = [".", "runtime"]
+resolver = "3"

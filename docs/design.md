@@ -3,7 +3,7 @@ Pepper Language Design
 
 Pepper is a modern systems programming language. It aims to replicate the best of all worlds. Some of the core priorities of the language are
 
-- Interperability with existing C code
+- Interoperability with existing Rust crates
 - Type inference
 - Functional constructs
 - Coroutines out of the box
@@ -233,20 +233,26 @@ Or just create an error object to throw it
 
 
 
-Interoperable with C
---------------------
+Interoperable with Rust
+-----------------------
 
-We need to be able to Interact with C. One thing we need is specifying pointers. Classes use pointers behind the scenes. The following
+Pepper should be able to call Rust crates through Rust bridge functions. Rust
+handles its own generic APIs, traits and ownership within the bridge; Pepper
+uses explicit signatures and representations at the boundary.
 
-    inc(x: PoInterTo(Int)) = 
-      x = x+1
+The LLVM backend remains. The initial implementation links LLVM-generated
+Pepper objects with a Rust runtime crate and Rust process startup using rustc.
+Printing already follows this path through the Rust standard I/O library.
 
-Eventually able to read .h files, and write them. Automatically route types to the C equivalents and back again when talking to c code. Potentially use clang for this.
+The bridge uses versioned symbols and an explicit calling convention. Rust's
+native ABI is unstable, so direct use of Rust layouts or mangled symbols is not
+part of the design. Using extern "C" for Rust bridge functions specifies the
+calling convention; the implementations are Rust.
 
-    include stdio
-
-    main() =
-      printf("Hello World from C!\n")
+Strings initially cross as borrowed UTF-8 bytes plus a length, errors as explicit
+status values. Future crate imports must define supported types, ownership and
+lifetimes, error conversion, and panic containment. Arbitrary Cargo imports and
+Rust generics are not yet implemented. See rust-interop.md for the staged plan.
 
 
 Coroutines

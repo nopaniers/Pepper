@@ -11,14 +11,15 @@ implementation language; Pepper remains a separate language with its own syntax.
    types, validate annotated parameters and assignments, and reject invalid type
    changes. Specify value semantics and class mutation before introducing a runtime.
 3. **Executable vertical slice (Hello World implemented).** Inkwell 0.11 and
-   LLVM 19 emit verified native objects, linked by the system linker driver.
+   LLVM 19 emit verified native objects, linked with a Rust runtime by rustc.
    `main()` and printing string literals run end to end. Next add typed values,
    arithmetic and user-defined calls, then a small standard library and a defined
    representation of values and memory management.
-4. **Native systems integration (started).** The backend already calls libc
-   `puts` through the C ABI. Define Pepper's general C-compatible ABI and implement
-   user-facing foreign declarations and linking.
-   Header import/export can follow the basic interoperability path.
+4. **Rust crate integration (runtime bridge implemented).** Pepper calls a
+   versioned ABI entry point in the `pepper-runtime` Rust crate. Rust owns startup
+   and I/O; rustc builds and links the runtime. Next add a Cargo-built bridge for
+   external Rust crates, explicit exported signatures, ownership rules and error
+   conversions. Direct Rust-native ABI compatibility is not assumed.
 5. **Core language expansion.** Classes, structural interfaces, closures,
    collection operations, error handling, resource cleanup and optional brace blocks.
 6. **Scientific types and correctness.** Constraints, units, contracts, numerical

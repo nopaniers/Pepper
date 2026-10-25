@@ -1,7 +1,7 @@
 # Pepper
 
 Pepper is an experimental systems programming language with readable syntax,
-C interoperability, type inference, functional and object-oriented constructs,
+Rust crate interoperability, type inference, functional and object-oriented constructs,
 and an emphasis on physical simulation. The original language vision is in
 [docs/design.md](docs/design.md).
 
@@ -13,8 +13,8 @@ and `src/pepper2.g` as a historical reference; Cargo ignores these files.
 
 ## Getting started
 
-Install Rust 1.85 or newer, LLVM **19.1** with development libraries, and a system
-linker driver (`cc` by default). Inkwell is pinned to 0.11.0 with LLVM 19 dynamic
+Install Rust 1.85 or newer (including `rustc`), LLVM **19.1** with development
+libraries, and the platform linker tools required by Rust. Inkwell is pinned to 0.11.0 with LLVM 19 dynamic
 linking. The Cargo lockfile pins the resolved Rust dependencies. Native targets
 currently enabled are x86 and AArch64. The compiler has been tested locally on
 Intel macOS; CI is configured for Ubuntu 24.04.
@@ -58,7 +58,7 @@ Inspect the generated LLVM IR or the parsed syntax tree:
 cargo run -- emit-ir examples/hello.pepper
 cargo run -- check examples/hello.pepper
 cargo run -- parse examples/functions.pepper
-cargo test --locked --all-targets
+cargo test --locked --workspace --all-targets
 ```
 
 `check` validates **syntax only**. `parse` prints the syntax tree. `build` and
@@ -76,19 +76,23 @@ The native backend currently accepts exactly one top-level `main()` with no
 parameters. Its body can contain calls to the built-in `print` with one String
 literal argument, and an optional bare `return`. Each print adds a newline; main
 returns exit status zero. Multiple prints, UTF-8 text, percent signs, and escaped
-newlines work. Strings containing NUL bytes are rejected because the initial
-runtime uses NUL-terminated C strings.
+newlines and embedded NUL bytes work. Strings cross the runtime bridge as borrowed
+UTF-8 bytes with an explicit byte length. Output failures return exit status one.
 
 The pipeline is Pepper source -> syntax tree -> semantic validation -> Inkwell
-LLVM module -> verified native object -> system linker -> executable. `print`
-calls libc's `puts`; there is no generated C and no JIT. The resulting Hello World
-executable depends on the system C runtime, not LLVM or the Pepper compiler.
+LLVM module -> verified native object -> Rust runtime crate and startup -> executable.
+`print` calls the `pepper-runtime` Rust crate, which uses Rust standard I/O. The
+compiler embeds the runtime sources and uses `rustc` to compile an `rlib` and link
+it with the native Pepper object. There is no generated C and no JIT. The result
+runs without LLVM or the Pepper compiler; Rust still uses platform system libraries.
 
-LLVM IR is verified before object emission. The `CC` environment variable can
-select the linker driver executable (for example `CC=clang`); it must be an
-executable path, not a shell command with arguments. Linking uses temporary files
-beside the output; they are cleaned up on failure and success, and failed links
-leave an existing output intact. The output parent directory must already exist.
+LLVM IR is verified before object emission. `RUSTC` selects the Rust compiler
+executable (default: `rustc`); it must be an executable path, not a shell command
+with arguments. The selected compiler builds both the runtime and Rust startup
+so their Rust ABI matches. `CC` no longer selects Pepper's build driver; rustc
+chooses its platform linker. Builds use temporary files beside the output; they
+are cleaned up on failure and success, and failed builds leave an existing output
+intact. The output parent directory must already exist.
 
 Assignments, user-defined function calls, numeric computation and general type
 inference are not executable yet. Unsupported programs fail with diagnostics
@@ -120,9 +124,28 @@ is right-associative and binds more tightly than unary minus. Multiplication is
 currently explicit. Identifiers currently use ASCII letters, digits, and underscores.
 
 Classes, control flow, ranges, imports, brace-delimited blocks, implicit multiplication,
-constraints, units, concurrency, and C interoperability are future work. Unsupported
+constraints, units, concurrency, and general Rust crate imports are future work. Unsupported
 syntax produces an error. The broader design document is aspirational; this subset
 is deliberately small so the compiler can grow in tested steps.
+
+## Rust crate interoperability
+
+The primary interoperability goal is **calling Rust crates from Pepper**. The
+current runtime is the first working example: LLVM-generated Pepper code calls
+Rust's `pepper-runtime` crate, and Rust owns process startup and printing.
+
+The bridge uses `extern "C"` as a stable calling convention for Rust functions.
+This does not require a C implementation. Rust's native ABI and layouts are not
+stable, so Pepper must not guess how to pass a Rust `String`, `Vec`, reference or
+trait object. The versioned print bridge takes `(*const u8, usize)` and returns an
+`i32` status; it borrows the bytes only during the call and does not unwind into
+Pepper. `runtime/src/lib.rs` documents its safety contract.
+
+Importing arbitrary Cargo dependencies is not implemented yet. The next stage
+is a Cargo-built Rust bridge with explicit exported functions and Pepper type
+signatures. Rust wrapper functions can then call crates through normal Rust APIs;
+Pepper will call the wrappers. Ownership, error conversion and panic handling
+must be defined at each boundary. See [docs/rust-interop.md](docs/rust-interop.md).
 
 ## Compiler layout
 
@@ -133,7 +156,9 @@ is deliberately small so the compiler can grow in tested steps.
 | `src/parser.rs` | Statements and precedence-based expression parsing |
 | `src/diagnostic.rs` | Source locations and diagnostic rendering |
 | `src/semantic.rs` | Executable-subset validation and lowered instructions |
-| `src/backend.rs` | Inkwell LLVM IR, verification, object emission and linking |
+| `src/backend.rs` | Inkwell LLVM IR, object emission and rustc-driven linking |
+| `runtime/src/lib.rs` | Rust runtime crate, safe I/O API and versioned ABI bridge |
+| `runtime/host.rs` | Rust process startup calling the Pepper entry point |
 | `src/lib.rs` | Public `pepper::parse` API |
 | `src/main.rs` | Command-line interface |
 | `tests/` | Parser, semantic, CLI and native compile-and-run tests |
@@ -142,12 +167,13 @@ is deliberately small so the compiler can grow in tested steps.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+rustfmt --edition 2024 --check runtime/host.rs
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets
 ```
 
 GitHub Actions installs LLVM 19, runs these checks, parses both examples, and
 compiles and runs Hello World. Tests cover exact output, zero exit status, semantic
-errors, linker failures, and temporary-file cleanup.
+errors, Rust compiler failures, output failures, and temporary-file cleanup.
 
 The implementation sequence is described in [docs/roadmap.md](docs/roadmap.md).

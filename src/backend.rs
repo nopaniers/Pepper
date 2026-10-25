@@ -1,10 +1,10 @@
-//! Native LLVM code generation via Inkwell, followed by system linking.
+//! Native LLVM code generation via Inkwell, linked with a Rust runtime by rustc.
 use std::{env, ffi::OsStr, fs, path::Path, process::Command};
 
 use inkwell::{
-    AddressSpace, OptimizationLevel,
+    AddressSpace, IntPredicate, OptimizationLevel,
     context::Context,
-    module::Module,
+    module::{Linkage, Module},
     targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
 };
 
@@ -39,12 +39,13 @@ fn generate<'ctx>(
     let builder = context.create_builder();
     let i32_type = context.i32_type();
     let pointer_type = context.ptr_type(AddressSpace::default());
-    let puts = module.add_function(
-        "puts",
-        i32_type.fn_type(&[pointer_type.into()], false),
+    let usize_type = context.ptr_sized_int_type(&machine.get_target_data(), None);
+    let print = module.add_function(
+        "pepper_runtime_print_v1",
+        i32_type.fn_type(&[pointer_type.into(), usize_type.into()], false),
         None,
     );
-    let main = module.add_function("main", i32_type.fn_type(&[], false), None);
+    let main = module.add_function("pepper_main", i32_type.fn_type(&[], false), None);
     let entry = context.append_basic_block(main, "entry");
     builder.position_at_end(entry);
     let mut returned = false;
@@ -54,15 +55,44 @@ fn generate<'ctx>(
         }
         match instruction {
             Instruction::Print(text) => {
-                if text.contains('\0') {
-                    return Err("NUL bytes in printed strings are not supported yet".into());
-                }
-                let string = builder
-                    .build_global_string_ptr(text, "str")
+                let bytes = context.const_string(text.as_bytes(), false);
+                let string = module.add_global(bytes.get_type(), None, "str");
+                string.set_initializer(&bytes);
+                string.set_constant(true);
+                string.set_linkage(Linkage::Private);
+                let call = builder
+                    .build_call(
+                        print,
+                        &[
+                            string.as_pointer_value().into(),
+                            usize_type.const_int(text.len() as u64, false).into(),
+                        ],
+                        "print_status",
+                    )
                     .map_err(|e| e.to_string())?;
+                let status = call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or("runtime print must return a status")?
+                    .into_int_value();
+                let failed = builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        status,
+                        i32_type.const_zero(),
+                        "print_failed",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let failure = context.append_basic_block(main, "print_error");
+                let next = context.append_basic_block(main, "print_next");
                 builder
-                    .build_call(puts, &[string.as_pointer_value().into()], "print_result")
+                    .build_conditional_branch(failed, failure, next)
                     .map_err(|e| e.to_string())?;
+                builder.position_at_end(failure);
+                builder
+                    .build_return(Some(&status))
+                    .map_err(|e| e.to_string())?;
+                builder.position_at_end(next);
             }
             Instruction::Return => {
                 builder
@@ -91,21 +121,20 @@ pub fn emit_ir(program: &Program, name: &str) -> Result<String, String> {
     Ok(module.print_to_string().to_string())
 }
 
-/// Emit a native object file using LLVM, then link a standalone executable.
-///
-/// The linker driver defaults to `cc`; CC can select a different executable path
-/// (not a shell command). Temporary files live beside the requested output and are
-/// cleaned up on success or failure. A failed link leaves an existing output intact.
+/// Emit a native LLVM object, compile the bundled Rust runtime crate, then use
+/// rustc to link the runtime, Rust startup and Pepper object into an executable.
+/// RUSTC selects the Rust compiler executable (not a shell command).
+/// Temporary files are cleaned up and failed builds preserve an existing output.
 pub fn build(program: &Program, name: &str, output: &Path) -> Result<(), String> {
-    let linker = env::var_os("CC").unwrap_or_else(|| "cc".into());
-    build_with_linker(program, name, output, &linker)
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    build_with_rustc(program, name, output, &rustc)
 }
 
-pub fn build_with_linker(
+pub fn build_with_rustc(
     program: &Program,
     name: &str,
     output: &Path,
-    linker: &OsStr,
+    rustc: &OsStr,
 ) -> Result<(), String> {
     let output = env::current_dir().map_err(|e| e.to_string())?.join(output);
     let parent = output
@@ -117,28 +146,65 @@ pub fn build_with_linker(
         .map_err(|e| format!("cannot create build directory in {}: {e}", parent.display()))?;
     let object = temporary.path().join("program.o");
     let executable = temporary.path().join("program");
+    let runtime_source = temporary.path().join("runtime.rs");
+    let runtime_library = temporary.path().join("libpepper_runtime.rlib");
+    let host_source = temporary.path().join("host.rs");
+    fs::write(&runtime_source, include_str!("../runtime/src/lib.rs"))
+        .map_err(|e| format!("cannot write Rust runtime: {e}"))?;
+    fs::write(&host_source, include_str!("../runtime/host.rs"))
+        .map_err(|e| format!("cannot write Rust startup: {e}"))?;
     let context = Context::create();
     let machine = target_machine()?;
     let module = generate(&context, program, name, &machine)?;
     machine
         .write_to_file(&module, FileType::Object, &object)
         .map_err(|e| format!("LLVM object emission failed: {e}"))?;
-    let result = Command::new(linker)
-        .arg(&object)
+
+    let mut runtime = Command::new(rustc);
+    runtime
+        .args([
+            "--edition=2024",
+            "--crate-name=pepper_runtime",
+            "--crate-type=rlib",
+        ])
+        .arg(&runtime_source)
         .arg("-o")
-        .arg(&executable)
-        .output()
-        .map_err(|e| format!("cannot run linker driver {}: {e}", linker.to_string_lossy()))?;
+        .arg(&runtime_library);
+    run_rustc(&mut runtime, "Rust runtime compilation")?;
+
+    let mut dependency = std::ffi::OsString::from("pepper_runtime=");
+    dependency.push(&runtime_library);
+    let mut link_argument = std::ffi::OsString::from("link-arg=");
+    link_argument.push(&object);
+    let mut link = Command::new(rustc);
+    link.args(["--edition=2024", "--crate-name=pepper_program"])
+        .arg(&host_source)
+        .arg("--extern")
+        .arg(dependency)
+        .arg("-C")
+        .arg(link_argument)
+        .arg("-o")
+        .arg(&executable);
+    run_rustc(&mut link, "Rust executable linking")?;
+    fs::rename(&executable, &output)
+        .map_err(|e| format!("cannot write executable {}: {e}", output.display()))?;
+    Ok(())
+}
+
+fn run_rustc(command: &mut Command, stage: &str) -> Result<(), String> {
+    let result = command.output().map_err(|e| {
+        format!(
+            "cannot run Rust compiler {}: {e}",
+            command.get_program().to_string_lossy()
+        )
+    })?;
     if !result.status.success() {
         return Err(format!(
-            "linker driver {} failed ({}):\n{}{}",
-            linker.to_string_lossy(),
+            "{stage} failed ({}):\n{}{}",
             result.status,
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         ));
     }
-    fs::rename(&executable, &output)
-        .map_err(|e| format!("cannot write executable {}: {e}", output.display()))?;
     Ok(())
 }
