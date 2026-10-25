@@ -1,0 +1,8 @@
+add(x: Int, y: Int) = x + y
+
+square(x: Double) = x^2
+
+main() =
+    numbers: Int[] = [1, 2, 3]
+    result = add(numbers[0], numbers[1])
+    print(result)

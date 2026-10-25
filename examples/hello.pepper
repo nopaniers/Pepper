@@ -1,0 +1,3 @@
+# Compile with: pepper build examples/hello.pepper -o target/hello
+main() =
+    print("Hello from Pepper!")

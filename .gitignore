@@ -1,0 +1,8 @@
+/target/
+__pycache__/
+*.pyc
+.DS_Store
+# Machine-specific LLVM installation path
+/.cargo/config.toml
+# Editor backup files
+*~

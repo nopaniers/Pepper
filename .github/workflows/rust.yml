@@ -1,0 +1,25 @@
+name: Rust
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    env:
+      LLVM_SYS_191_PREFIX: /usr/lib/llvm-19
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM 19 and linker driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-19-dev clang
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets
+      - run: cargo run --locked -- check examples/hello.pepper
+      - run: cargo run --locked -- check examples/functions.pepper
+      - name: Compile and run Hello World
+        run: |
+          cargo run --locked -- build examples/hello.pepper -o target/hello
+          test "$(./target/hello)" = 'Hello from Pepper!'
