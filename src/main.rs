@@ -16,7 +16,7 @@ fn run() -> Result<(), String> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!(
-            "Pepper compiler (LLVM backend)\n\n{USAGE}\n\n  parse     Print the syntax tree\n  check     Check syntax only\n  emit-ir   Validate the executable subset and print LLVM IR\n  build     Compile the executable subset to a native executable\n\nExecutable subset: main(), print(String literal), bare return.\nRUSTC may select the Rust compiler executable (default: rustc)."
+            "Pepper compiler (LLVM backend)\n\n{USAGE}\n\n  parse     Print the syntax tree\n  check     Check syntax only\n  emit-ir   Validate the executable subset and print LLVM IR\n  build     Compile the executable subset to a native executable\n\nExecutable subset: typed functions, scalar values, local arrays and print.\nRUSTC may select the Rust compiler executable (default: rustc)."
         );
         return Ok(());
     }

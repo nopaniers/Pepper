@@ -2,13 +2,12 @@
 use std::{env, ffi::OsStr, fs, path::Path, process::Command};
 
 use inkwell::{
-    AddressSpace, IntPredicate, OptimizationLevel,
+    OptimizationLevel,
     context::Context,
-    module::{Linkage, Module},
     targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine},
 };
 
-use crate::semantic::{Instruction, Program};
+use crate::{codegen::generate, semantic::Program};
 
 fn target_machine() -> Result<TargetMachine, String> {
     Target::initialize_native(&InitializationConfig::default())
@@ -25,92 +24,6 @@ fn target_machine() -> Result<TargetMachine, String> {
             CodeModel::Default,
         )
         .ok_or_else(|| "LLVM could not create a native target machine".into())
-}
-
-fn generate<'ctx>(
-    context: &'ctx Context,
-    program: &Program,
-    name: &str,
-    machine: &TargetMachine,
-) -> Result<Module<'ctx>, String> {
-    let module = context.create_module(name);
-    module.set_triple(&machine.get_triple());
-    module.set_data_layout(&machine.get_target_data().get_data_layout());
-    let builder = context.create_builder();
-    let i32_type = context.i32_type();
-    let pointer_type = context.ptr_type(AddressSpace::default());
-    let usize_type = context.ptr_sized_int_type(&machine.get_target_data(), None);
-    let print = module.add_function(
-        "pepper_runtime_print_v1",
-        i32_type.fn_type(&[pointer_type.into(), usize_type.into()], false),
-        None,
-    );
-    let main = module.add_function("pepper_main", i32_type.fn_type(&[], false), None);
-    let entry = context.append_basic_block(main, "entry");
-    builder.position_at_end(entry);
-    let mut returned = false;
-    for instruction in &program.instructions {
-        if returned {
-            return Err("invalid lowered program: instruction after return".into());
-        }
-        match instruction {
-            Instruction::Print(text) => {
-                let bytes = context.const_string(text.as_bytes(), false);
-                let string = module.add_global(bytes.get_type(), None, "str");
-                string.set_initializer(&bytes);
-                string.set_constant(true);
-                string.set_linkage(Linkage::Private);
-                let call = builder
-                    .build_call(
-                        print,
-                        &[
-                            string.as_pointer_value().into(),
-                            usize_type.const_int(text.len() as u64, false).into(),
-                        ],
-                        "print_status",
-                    )
-                    .map_err(|e| e.to_string())?;
-                let status = call
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or("runtime print must return a status")?
-                    .into_int_value();
-                let failed = builder
-                    .build_int_compare(
-                        IntPredicate::NE,
-                        status,
-                        i32_type.const_zero(),
-                        "print_failed",
-                    )
-                    .map_err(|e| e.to_string())?;
-                let failure = context.append_basic_block(main, "print_error");
-                let next = context.append_basic_block(main, "print_next");
-                builder
-                    .build_conditional_branch(failed, failure, next)
-                    .map_err(|e| e.to_string())?;
-                builder.position_at_end(failure);
-                builder
-                    .build_return(Some(&status))
-                    .map_err(|e| e.to_string())?;
-                builder.position_at_end(next);
-            }
-            Instruction::Return => {
-                builder
-                    .build_return(Some(&i32_type.const_zero()))
-                    .map_err(|e| e.to_string())?;
-                returned = true;
-            }
-        }
-    }
-    if !returned {
-        builder
-            .build_return(Some(&i32_type.const_zero()))
-            .map_err(|e| e.to_string())?;
-    }
-    module
-        .verify()
-        .map_err(|e| format!("LLVM verification failed: {e}"))?;
-    Ok(module)
 }
 
 /// Produce verified LLVM IR for inspection. This does not invoke a linker.

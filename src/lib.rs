@@ -1,6 +1,7 @@
 //! Pepper's parser and minimal native LLVM compiler.
 pub mod ast;
 pub mod backend;
+mod codegen;
 pub mod diagnostic;
 pub mod lexer;
 pub mod parser;

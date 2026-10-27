@@ -24,3 +24,7 @@ jobs:
         run: |
           cargo run --locked -- build examples/hello.pepper -o target/hello
           test "$(./target/hello)" = 'Hello from Pepper!'
+      - name: Compile and run function and array example
+        run: |
+          cargo run --locked -- build examples/functions.pepper -o target/functions
+          test "$(./target/functions)" = '3'

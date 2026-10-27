@@ -6,7 +6,7 @@ and an emphasis on physical simulation. The original language vision is in
 [docs/design.md](docs/design.md).
 
 This repository contains a Rust compiler with an [Inkwell](https://github.com/TheDan64/inkwell)
-LLVM backend. It can compile a minimal Hello World program into a native executable.
+LLVM backend. It compiles Hello World and typed function/array examples into native executables.
 The parser supports a broader subset than the executable backend.
 The original Python/PLYPlus prototype remains in `src/parser.py`, `src/pepper.g`,
 and `src/pepper2.g` as a historical reference; Cargo ignores these files.
@@ -52,6 +52,14 @@ cargo run -- build examples/hello.pepper -o target/hello
 # Hello from Pepper!
 ```
 
+Compile and run the function example:
+
+```sh
+cargo run -- build examples/functions.pepper -o target/functions
+./target/functions
+# 3
+```
+
 Inspect the generated LLVM IR or the parsed syntax tree:
 
 ```sh
@@ -72,12 +80,37 @@ main() =
     print("Hello world!")
 ```
 
-The native backend currently accepts exactly one top-level `main()` with no
-parameters. Its body can contain calls to the built-in `print` with one String
-literal argument, and an optional bare `return`. Each print adds a newline; main
-returns exit status zero. Multiple prints, UTF-8 text, percent signs, and escaped
-newlines and embedded NUL bytes work. Strings cross the runtime bridge as borrowed
-UTF-8 bytes with an explicit byte length. Output failures return exit status one.
+The native backend accepts top-level functions with explicitly typed parameters,
+a parameterless `main()`, and inferred local and return types. A function's last
+expression is its result; explicit `return value` is also supported. A body ending
+with an assignment or bare `return` returns Unit. `main` discards expression
+results and accepts only bare returns. Forward calls work; duplicate definitions,
+unknown variables, invalid argument counts and type mismatches are diagnosed.
+Every function is checked, including unused ones.
+
+The executable value types are `Int`, `Double`, `Bool`, `String`, and local,
+one-dimensional arrays of scalar values. Assignments may have type annotations;
+reassignment preserves the variable's type. Integers can widen to Double in
+arithmetic, calls or assignments, but Double does not narrow implicitly to Int.
+Functions can accept and return scalar values; arrays cannot cross function
+boundaries yet. Empty arrays cannot yet infer an element type. Arrays are fixed
+length, copied by value, and indexed by Int with runtime bounds checks; negative
+indexes are errors. Element assignment and slices are not implemented yet.
+
+Supported numeric operations are `+ - * / % ^`, unary signs, and comparisons.
+`not` accepts Bool; short-circuit `and`/`or` remain parser-only. As an initial
+implementation rule, Int is signed 64-bit with wrapping addition, subtraction,
+multiplication, negation and nonnegative integer powers. Integer division truncates
+toward zero. Division by zero, signed division overflow and negative integer
+exponents report runtime errors and exit with status one. Double is a 64-bit float
+with IEEE arithmetic and Rust floating-point powers. These numerical rules are
+provisional rather than a final systems-language specification.
+
+`print` accepts one Int, Double, Bool or String, formats numbers through Rust, and
+adds a newline. Multiple prints, UTF-8 text, percent signs, escaped newlines and
+embedded NUL bytes work. Strings cross the runtime bridge as borrowed UTF-8 bytes
+with an explicit byte length. Output failures propagate through calls and exit
+with status one. Successful execution returns status zero.
 
 The pipeline is Pepper source -> syntax tree -> semantic validation -> Inkwell
 LLVM module -> verified native object -> Rust runtime crate and startup -> executable.
@@ -94,10 +127,10 @@ chooses its platform linker. Builds use temporary files beside the output; they
 are cleaned up on failure and success, and failed builds leave an existing output
 intact. The output parent directory must already exist.
 
-Assignments, user-defined function calls, numeric computation and general type
-inference are not executable yet. Unsupported programs fail with diagnostics
-rather than silently dropping code. `examples/functions.pepper` remains a parser
-example and intentionally cannot be built yet.
+Nested functions, recursive return-type inference, control-flow statements and
+general Rust crate imports are not executable yet. Unsupported programs fail with
+diagnostics rather than silently dropping code. Both repository examples build
+and run; the parser still accepts a larger language than the backend.
 
 ## Parser syntax
 
@@ -155,7 +188,8 @@ must be defined at each boundary. See [docs/rust-interop.md](docs/rust-interop.m
 | `src/ast.rs` | Source-spanned syntax tree |
 | `src/parser.rs` | Statements and precedence-based expression parsing |
 | `src/diagnostic.rs` | Source locations and diagnostic rendering |
-| `src/semantic.rs` | Executable-subset validation and lowered instructions |
+| `src/semantic.rs` | Name resolution, local/return type inference and typed IR |
+| `src/codegen.rs` | Typed LLVM functions, values, calls and runtime guards |
 | `src/backend.rs` | Inkwell LLVM IR, object emission and rustc-driven linking |
 | `runtime/src/lib.rs` | Rust runtime crate, safe I/O API and versioned ABI bridge |
 | `runtime/host.rs` | Rust process startup calling the Pepper entry point |
@@ -173,7 +207,8 @@ cargo test --locked --workspace --all-targets
 ```
 
 GitHub Actions installs LLVM 19, runs these checks, parses both examples, and
-compiles and runs Hello World. Tests cover exact output, zero exit status, semantic
-errors, Rust compiler failures, output failures, and temporary-file cleanup.
+compiles and runs both examples. Tests cover function calls, type inference, numeric
+operations, array copies/indexing, runtime errors, Rust compiler failures, output
+failures, and temporary-file cleanup.
 
 The implementation sequence is described in [docs/roadmap.md](docs/roadmap.md).

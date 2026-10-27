@@ -6,7 +6,9 @@ the Pepper backend; Rust implements adapters and runtime services.
 ## Working implementation
 
 1. Pepper's LLVM object defines `pepper_main() -> i32`.
-2. `print("text")` emits a call to `pepper_runtime_print_v1(data, byte_len) -> i32`.
+2. String printing calls `pepper_runtime_print_v1(data, byte_len) -> i32`; numeric
+   and Bool printing use typed runtime bridges. Power operations also use Rust
+   runtime functions.
 3. The Rust `pepper-runtime` crate exports that bridge function and provides safe
    printing via Rust's standard I/O. It returns 0 on success and 1 on invalid input
    or output failure. Pepper propagates a failing status without executing later
@@ -14,6 +16,11 @@ the Pepper backend; Rust implements adapters and runtime services.
 4. `rustc` compiles the bundled crate as an `rlib`, then compiles Rust process
    startup and links the Pepper object and crate. The runtime is bundled with the
    compiler, so an installed compiler does not need the repository at build time.
+
+Pepper-to-Pepper function calls use an internal status-returning convention, with
+scalar results written through an output pointer only on success. Runtime errors
+therefore propagate through calls to `pepper_main` without loading an unwritten
+result. This internal convention is not an external Rust crate import interface.
 
 The runtime crate is a Cargo workspace member, independently testable with
 `cargo test -p pepper-runtime`. Both runtime and startup use the selected `RUSTC`
